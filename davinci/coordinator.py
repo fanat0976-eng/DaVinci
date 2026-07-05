@@ -1,0 +1,150 @@
+"""Coordinator — thin router that dispatches tasks to agents."""
+
+from pathlib import Path
+from typing import Any
+
+from .llm.client import LLMClient
+from .agents.architect import ArchitectAgent
+from .agents.coder import CoderAgent
+from .agents.tester import TesterAgent
+from .agents.reviewer import ReviewerAgent
+from .memory.decisions import DecisionsMemory
+from .memory.context import ContextManager
+from .config import Config
+
+
+class Coordinator:
+    """Routes tasks to the appropriate agent with independent review."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.llm = LLMClient(
+            base_url=config.llm.base_url,
+            model=config.llm.model,
+            timeout=config.llm.timeout,
+        )
+
+        # Shared memory
+        self.decisions = DecisionsMemory(config.davinci_dir)
+        self.context = ContextManager(config.project_dir, self.decisions)
+
+        # Agents
+        self.architect = ArchitectAgent(self.llm, config.project_dir)
+        self.coder = CoderAgent(self.llm, config.project_dir)
+        self.tester = TesterAgent(self.llm, config.project_dir)
+        self.reviewer = ReviewerAgent(self.llm, config.project_dir)
+
+    def route(self, task: str) -> str:
+        """Determine which agent should handle the task."""
+        task_lower = task.lower()
+
+        # Routing rules
+        if any(w in task_lower for w in ["архитектура", "спроектируй", "план", "design", "architect"]):
+            return "architect"
+        if any(w in task_lower for w in ["тест", "проверь", "test", "verify"]):
+            return "tester"
+        if any(w in task_lower for w in ["ревью", "баг", "ошибк", "review", "bug", "fix"]):
+            return "reviewer"
+        # Default: coder
+        return "coder"
+
+    def run(self, task: str, force_agent: str | None = None) -> dict[str, Any]:
+        """Execute a task with full agent pipeline.
+
+        Pipeline:
+        1. Architect designs (if complex task)
+        2. Coder implements
+        3. Tester verifies
+        4. Reviewer checks (if issues found)
+        """
+        agent_name = force_agent or self.route(task)
+        context = self.context.gather(task)
+
+        # Record decision
+        self.decisions.add(
+            title=f"Task: {task[:50]}...",
+            content=f"- Assigned to: **{agent_name}**\n- Task: {task}",
+            agent="coordinator",
+        )
+
+        results = {"pipeline": [], "task": task, "agent": agent_name}
+
+        # Step 1: Architect (for complex tasks)
+        if agent_name == "architect" or self._is_complex(task):
+            arch_result = self.architect.run(
+                f"Design a solution for: {task}\n\nExisting context:\n{context}"
+            )
+            results["pipeline"].append({"agent": "architect", "result": arch_result})
+            context += f"\n\n## Architecture Plan\n{arch_result['response']}"
+
+        # Step 2: Coder implements
+        if agent_name in ("coder", "architect"):
+            coder_result = self.coder.run(
+                f"Implement: {task}\n\nPlan:\n{context}"
+            )
+            results["pipeline"].append({"agent": "coder", "result": coder_result})
+        elif agent_name in ("tester", "reviewer"):
+            # For tester/reviewer, they analyze existing code
+            pass
+
+        # Step 3: Tester verifies (independent review)
+        if agent_name != "tester" and results["pipeline"]:
+            code_context = "\n\n".join(
+                f"### {p['agent']} output:\n{p['result']['response'][:2000]}"
+                for p in results["pipeline"]
+            )
+            tester_result = self.tester.run(
+                f"Review and test this implementation:\n\n{code_context}\n\nOriginal task: {task}"
+            )
+            results["pipeline"].append({"agent": "tester", "result": tester_result})
+
+            # If tester found issues, reviewer fixes (not the original coder!)
+            if "FAIL" in tester_result["response"] or "REJECTED" in tester_result["response"]:
+                reviewer_result = self.reviewer.run(
+                    f"The tester found issues. Fix them:\n\n"
+                    f"Tester feedback:\n{tester_result['response']}\n\n"
+                    f"Original code:\n{code_context}"
+                )
+                results["pipeline"].append({"agent": "reviewer", "result": reviewer_result})
+
+        # Step 4: If task was tester/reviewer directly
+        elif agent_name == "tester":
+            tester_result = self.tester.run(f"{task}\n\n{context}")
+            results["pipeline"].append({"agent": "tester", "result": tester_result})
+        elif agent_name == "reviewer":
+            reviewer_result = self.reviewer.run(f"{task}\n\n{context}")
+            results["pipeline"].append({"agent": "reviewer", "result": reviewer_result})
+
+        # Combine all responses
+        full_response = "\n\n---\n\n".join(
+            f"### {p['agent'].upper()}\n{p['result']['response']}"
+            for p in results["pipeline"]
+        )
+        results["response"] = full_response
+
+        # Collect all actions
+        all_actions = []
+        for p in results["pipeline"]:
+            all_actions.extend(p["result"].get("actions", []))
+        results["actions"] = all_actions
+
+        return results
+
+    def run_stream(self, task: str):
+        """Stream the response token by token."""
+        agent_name = self.route(task)
+        agent = getattr(self, agent_name)
+        context = self.context.gather(task)
+        messages = agent.build_messages(task, context)
+        for token in self.llm.chat_stream(messages):
+            yield token
+
+    def _is_complex(self, task: str) -> bool:
+        """Determine if a task needs architectural planning."""
+        complex_signals = [
+            "создай", "проект", "систему", "архитектур",
+            "create", "project", "system", "implement",
+            "добавь модуль", "add module", "рефактор",
+        ]
+        task_lower = task.lower()
+        return any(s in task_lower for s in complex_signals)
