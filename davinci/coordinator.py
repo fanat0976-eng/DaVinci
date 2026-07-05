@@ -24,6 +24,7 @@ class Coordinator:
             model=config.llm.model,
             timeout=config.llm.timeout,
         )
+        self._complex_cache: dict[str, bool] = {}  # Cache _is_complex results
 
         # Shared memory
         self.decisions = DecisionsMemory(config.davinci_dir)
@@ -209,7 +210,22 @@ Category:"""
             yield token
 
     def _is_complex(self, task: str) -> bool:
-        """Determine if a task needs architectural planning via LLM."""
+        """Determine if a task needs architectural planning via LLM.
+
+        Results are cached to avoid repeated LLM calls for similar tasks.
+        """
+        # Check cache first
+        cache_key = task.strip().lower()[:100]
+        if cache_key in self._complex_cache:
+            return self._complex_cache[cache_key]
+
+        # Quick keyword check before LLM call
+        quick_signals = ["систему", "проект", "архитектур", "system", "project", "architecture"]
+        task_lower = task.lower()
+        if any(s in task_lower for s in quick_signals):
+            self._complex_cache[cache_key] = True
+            return True
+
         prompt = f"""Is this task complex enough to need architecture planning first?
 Answer ONLY "yes" or "no".
 
@@ -235,6 +251,8 @@ Answer:"""
                 temperature=0.1,
                 max_tokens=5,
             )
-            return response.strip().lower().startswith("yes")
+            result = response.strip().lower().startswith("yes")
+            self._complex_cache[cache_key] = result
+            return result
         except Exception:
             return False

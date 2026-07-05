@@ -5,22 +5,46 @@ Always use 127.0.0.1, NOT localhost — localhost is intercepted by proxy.
 """
 
 import json
+import time
 import requests
 from typing import Generator
 
 
+class RateLimiter:
+    """Simple token bucket rate limiter."""
+
+    def __init__(self, max_calls: int = 10, per_seconds: float = 1.0):
+        self.max_calls = max_calls
+        self.per_seconds = per_seconds
+        self.calls: list[float] = []
+
+    def wait(self):
+        """Wait if rate limit exceeded."""
+        now = time.monotonic()
+        # Remove old entries
+        self.calls = [t for t in self.calls if now - t < self.per_seconds]
+        if len(self.calls) >= self.max_calls:
+            sleep_time = self.per_seconds - (now - self.calls[0])
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+        self.calls.append(time.monotonic())
+
+
 class LLMClient:
-    """Ollama LLM client with streaming support."""
+    """Ollama LLM client with streaming support and rate limiting."""
 
     def __init__(self, base_url: str = "http://127.0.0.1:11434",
-                 model: str = "qwen2.5:14b", timeout: int = 120):
+                 model: str = "qwen2.5:14b", timeout: int = 120,
+                 rate_limit: int = 10):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self._limiter = RateLimiter(max_calls=rate_limit, per_seconds=1.0)
 
     def chat(self, messages: list[dict], temperature: float = 0.3,
              max_tokens: int = 4096) -> str:
         """Send chat completion request and return full response."""
+        self._limiter.wait()
         payload = {
             "model": self.model,
             "messages": messages,
@@ -41,6 +65,7 @@ class LLMClient:
     def chat_stream(self, messages: list[dict], temperature: float = 0.3,
                     max_tokens: int = 4096) -> Generator[str, None, None]:
         """Stream chat completion response token by token."""
+        self._limiter.wait()
         payload = {
             "model": self.model,
             "messages": messages,

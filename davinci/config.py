@@ -17,6 +17,21 @@ class LLMConfig:
     max_tokens: int = 4096
     timeout: int = 120
 
+    def validate(self) -> list[str]:
+        """Validate LLM config. Returns list of errors."""
+        errors = []
+        if not self.base_url.startswith("http"):
+            errors.append(f"Invalid base_url: {self.base_url}")
+        if not self.model:
+            errors.append("Model name is required")
+        if not (0.0 <= self.temperature <= 2.0):
+            errors.append(f"Temperature must be 0.0-2.0, got {self.temperature}")
+        if not (1 <= self.max_tokens <= 1_000_000):
+            errors.append(f"max_tokens must be 1-1000000, got {self.max_tokens}")
+        if not (1 <= self.timeout <= 600):
+            errors.append(f"Timeout must be 1-600s, got {self.timeout}")
+        return errors
+
 
 @dataclass
 class AgentConfig:
@@ -30,6 +45,15 @@ class AgentConfig:
         ".toml", ".md", ".txt", ".sh", ".bat", ".ps1",
         ".sql", ".xml", ".env", ".gitignore",
     ])
+
+    def validate(self) -> list[str]:
+        """Validate agent config. Returns list of errors."""
+        errors = []
+        if not (1 <= self.max_iterations <= 20):
+            errors.append(f"max_iterations must be 1-20, got {self.max_iterations}")
+        if not (100 <= self.max_file_size <= 10_000_000):
+            errors.append(f"max_file_size must be 100-10000000, got {self.max_file_size}")
+        return errors
 
 
 @dataclass
@@ -67,8 +91,8 @@ class Config:
                     for k, v in data["agent"].items():
                         if hasattr(config.agent, k):
                             setattr(config.agent, k, v)
-            except Exception:
-                pass
+            except yaml.YAMLError as e:
+                raise ValueError(f"Invalid config.yaml: {e}")
 
         # Environment overrides
         if url := os.environ.get("OLLAMA_BASE_URL"):
@@ -76,7 +100,19 @@ class Config:
         if model := os.environ.get("DAVINCI_MODEL"):
             config.llm.model = model
 
+        # Validate
+        errors = config.validate()
+        if errors:
+            raise ValueError(f"Config validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
+
         return config
+
+    def validate(self) -> list[str]:
+        """Validate all config sections."""
+        errors = []
+        errors.extend(self.llm.validate())
+        errors.extend(self.agent.validate())
+        return errors
 
     def save(self):
         """Save config to .davinci/config.yaml."""
