@@ -12,11 +12,15 @@ class FileTools:
         self.project_dir = project_dir
 
     def _resolve(self, path: str) -> Path:
-        """Resolve path relative to project directory."""
+        """Resolve path relative to project directory with containment check."""
         p = Path(path)
         if not p.is_absolute():
             p = self.project_dir / p
-        return p.resolve()
+        resolved = p.resolve()
+        # Security: ensure resolved path is within project directory
+        if not resolved.is_relative_to(self.project_dir.resolve()):
+            raise ValueError(f"Path traversal blocked: {path} resolves outside project")
+        return resolved
 
     def read_file(self, path: str) -> str:
         """Read file content."""
@@ -64,8 +68,19 @@ class FileTools:
                 results.append(str(rel))
         return sorted(results)
 
+    BLOCKED_COMMANDS = [
+        "rm -rf", "rmdir /s", "Format-Volume", "Remove-Item -Recurse",
+        "del /f /s /q", "cipher /w", "shutdown", "restart-computer",
+    ]
+
     def run_bash(self, command: str, timeout: int = 30) -> str:
         """Run a bash command and return output."""
+        # Security: block dangerous commands
+        cmd_lower = command.lower().strip()
+        for blocked in self.BLOCKED_COMMANDS:
+            if blocked.lower() in cmd_lower:
+                return f"[BLOCKED] Command contains dangerous pattern: {blocked}"
+
         try:
             result = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", command],

@@ -118,51 +118,65 @@ Category:"""
 
         results = {"pipeline": [], "task": task, "agent": agent_name}
 
-        # Step 1: Architect (for complex tasks)
-        if agent_name == "architect" or self._is_complex(task):
-            arch_result = self.architect.run(
-                f"Design a solution for: {task}\n\nExisting context:\n{base_context}"
-            )
-            results["pipeline"].append({"agent": "architect", "result": arch_result})
-            base_context += f"\n\n## Architecture Plan\n{arch_result['response']}"
-
-        # Step 2: Coder implements
-        if agent_name in ("coder", "architect"):
-            coder_result = self.coder.run(
-                f"Implement: {task}\n\nPlan:\n{base_context}"
-            )
-            results["pipeline"].append({"agent": "coder", "result": coder_result})
-        elif agent_name in ("tester", "reviewer"):
-            # For tester/reviewer, they analyze existing code
-            pass
-
-        # Step 3: Tester verifies (independent review)
-        if agent_name != "tester" and results["pipeline"]:
-            code_context = "\n\n".join(
-                f"### {p['agent']} output:\n{p['result']['response'][:2000]}"
-                for p in results["pipeline"]
-            )
-            tester_result = self.tester.run(
-                f"Review and test this implementation:\n\n{code_context}\n\nOriginal task: {task}"
-            )
-            results["pipeline"].append({"agent": "tester", "result": tester_result})
-
-            # If tester found issues, reviewer fixes (not the original coder!)
-            if "FAIL" in tester_result["response"] or "REJECTED" in tester_result["response"]:
-                reviewer_result = self.reviewer.run(
-                    f"The tester found issues. Fix them:\n\n"
-                    f"Tester feedback:\n{tester_result['response']}\n\n"
-                    f"Original code:\n{code_context}"
+        # Execute based on agent type
+        try:
+            if agent_name == "architect":
+                # Architect designs, then coder implements
+                arch_result = self.architect.run(
+                    f"Design a solution for: {task}\n\nExisting context:\n{base_context}"
                 )
+                results["pipeline"].append({"agent": "architect", "result": arch_result})
+                base_context += f"\n\n## Architecture Plan\n{arch_result['response']}"
+
+                coder_result = self.coder.run(
+                    f"Implement: {task}\n\nPlan:\n{base_context}"
+                )
+                results["pipeline"].append({"agent": "coder", "result": coder_result})
+
+            elif agent_name == "coder":
+                # Check if complex (needs architect first)
+                if self._is_complex(task):
+                    arch_result = self.architect.run(
+                        f"Design a solution for: {task}\n\nExisting context:\n{base_context}"
+                    )
+                    results["pipeline"].append({"agent": "architect", "result": arch_result})
+                    base_context += f"\n\n## Architecture Plan\n{arch_result['response']}"
+
+                coder_result = self.coder.run(
+                    f"Implement: {task}\n\nPlan:\n{base_context}"
+                )
+                results["pipeline"].append({"agent": "coder", "result": coder_result})
+
+            elif agent_name == "tester":
+                tester_result = self.tester.run(f"{task}\n\n{base_context}")
+                results["pipeline"].append({"agent": "tester", "result": tester_result})
+
+            elif agent_name == "reviewer":
+                reviewer_result = self.reviewer.run(f"{task}\n\n{base_context}")
                 results["pipeline"].append({"agent": "reviewer", "result": reviewer_result})
 
-        # Step 4: If task was tester/reviewer directly
-        elif agent_name == "tester":
-            tester_result = self.tester.run(f"{task}\n\n{base_context}")
-            results["pipeline"].append({"agent": "tester", "result": tester_result})
-        elif agent_name == "reviewer":
-            reviewer_result = self.reviewer.run(f"{task}\n\n{base_context}")
-            results["pipeline"].append({"agent": "reviewer", "result": reviewer_result})
+            # Independent review (for coder/architect output)
+            if agent_name in ("coder", "architect") and results["pipeline"]:
+                code_context = "\n\n".join(
+                    f"### {p['agent']} output:\n{p['result']['response'][:2000]}"
+                    for p in results["pipeline"]
+                )
+                tester_result = self.tester.run(
+                    f"Review and test this implementation:\n\n{code_context}\n\nOriginal task: {task}"
+                )
+                results["pipeline"].append({"agent": "tester", "result": tester_result})
+
+                # If tester found issues, reviewer fixes (not the original coder!)
+                if "FAIL" in tester_result["response"] or "REJECTED" in tester_result["response"]:
+                    reviewer_result = self.reviewer.run(
+                        f"The tester found issues. Fix them:\n\n"
+                        f"Tester feedback:\n{tester_result['response']}\n\n"
+                        f"Original code:\n{code_context}"
+                    )
+                    results["pipeline"].append({"agent": "reviewer", "result": reviewer_result})
+
+        except Exception as e:
+            results["error"] = str(e)
 
         # Combine all responses
         full_response = "\n\n---\n\n".join(

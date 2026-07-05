@@ -15,6 +15,7 @@ class BaseAgent(ABC):
 
     ROLE: str = "base"
     DESCRIPTION: str = "Base agent"
+    MAX_HISTORY: int = 20  # Max history messages to keep
 
     def __init__(self, llm: LLMClient, project_dir: Path):
         self.llm = llm
@@ -52,9 +53,12 @@ class BaseAgent(ABC):
             result = self.execute_action(action)
             results.append(result)
 
-        # Record in history
+        # Record in history (with limit)
         self.history.append({"role": "user", "content": task})
         self.history.append({"role": "assistant", "content": response})
+        # Keep only last MAX_HISTORY messages (pairs)
+        if len(self.history) > self.MAX_HISTORY * 2:
+            self.history = self.history[-self.MAX_HISTORY * 2:]
 
         return {
             "response": response,
@@ -64,10 +68,14 @@ class BaseAgent(ABC):
 
     @staticmethod
     def _clean_content(content: str) -> str:
-        """Remove markdown code blocks from content."""
-        # Remove ```python ... ``` or ``` ... ```
-        content = re.sub(r'^```\w*\n', '', content.strip())
-        content = re.sub(r'\n```$', '', content)
+        """Remove wrapping markdown code blocks from content."""
+        content = content.strip()
+        # Only remove if content is fully wrapped in code blocks
+        if content.startswith("```") and content.endswith("```"):
+            # Remove first line (```lang) and last line (```)
+            lines = content.split("\n")
+            if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].strip() == "```":
+                content = "\n".join(lines[1:-1])
         return content.strip()
 
     def parse_actions(self, response: str) -> list[dict]:

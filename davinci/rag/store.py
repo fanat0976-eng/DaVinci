@@ -38,54 +38,58 @@ class VectorStore:
         """Initialize database schema."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path))
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS chunks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT NOT NULL,
-                file_path TEXT NOT NULL,
-                start_line INTEGER,
-                end_line INTEGER,
-                language TEXT,
-                embedding BLOB NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_file_path ON chunks(file_path)
-        """)
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    start_line INTEGER,
+                    end_line INTEGER,
+                    language TEXT,
+                    embedding BLOB NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_path ON chunks(file_path)
+            """)
+            conn.commit()
+        finally:
+            conn.close()
 
     def add(self, content: str, file_path: str, embedding: list[float],
             start_line: int = 0, end_line: int = 0, language: str = "text"):
         """Add a chunk with its embedding."""
         conn = sqlite3.connect(str(self.db_path))
-        conn.execute(
-            "INSERT INTO chunks (content, file_path, start_line, end_line, language, embedding) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (content, file_path, start_line, end_line, language,
-             json.dumps(embedding))
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                "INSERT INTO chunks (content, file_path, start_line, end_line, language, embedding) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (content, file_path, start_line, end_line, language,
+                 json.dumps(embedding))
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def search(self, query_embedding: list[float], top_k: int = 5,
                file_filter: str | None = None) -> list[SearchResult]:
         """Search for similar chunks using cosine similarity."""
         conn = sqlite3.connect(str(self.db_path))
-
-        if file_filter:
-            rows = conn.execute(
-                "SELECT content, file_path, start_line, end_line, language, embedding "
-                "FROM chunks WHERE file_path LIKE ?",
-                (f"%{file_filter}%",)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT content, file_path, start_line, end_line, language, embedding "
-                "FROM chunks"
-            ).fetchall()
-
-        conn.close()
+        try:
+            if file_filter:
+                rows = conn.execute(
+                    "SELECT content, file_path, start_line, end_line, language, embedding "
+                    "FROM chunks WHERE file_path LIKE ?",
+                    (f"%{file_filter}%",)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT content, file_path, start_line, end_line, language, embedding "
+                    "FROM chunks"
+                ).fetchall()
+        finally:
+            conn.close()
 
         # Calculate cosine similarity
         results = []
@@ -110,16 +114,20 @@ class VectorStore:
     def clear(self):
         """Clear all chunks."""
         conn = sqlite3.connect(str(self.db_path))
-        conn.execute("DELETE FROM chunks")
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("DELETE FROM chunks")
+            conn.commit()
+        finally:
+            conn.close()
 
     def count(self) -> int:
         """Get total number of chunks."""
         conn = sqlite3.connect(str(self.db_path))
-        result = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
-        conn.close()
-        return result[0]
+        try:
+            result = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
+            return result[0]
+        finally:
+            conn.close()
 
     def _normalize(self, vec: list[float]) -> list[float]:
         """Normalize a vector."""

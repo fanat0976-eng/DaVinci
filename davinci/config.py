@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from dataclasses import dataclass, field
 
+import yaml
+
 
 @dataclass
 class LLMConfig:
@@ -55,7 +57,6 @@ class Config:
         config_file = config.davinci_dir / "config.yaml"
         if config_file.exists():
             try:
-                import yaml
                 with open(config_file, encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
                 if "llm" in data:
@@ -79,7 +80,6 @@ class Config:
 
     def save(self):
         """Save config to .davinci/config.yaml."""
-        import yaml
         config_file = self.davinci_dir / "config.yaml"
         data = {
             "llm": {
