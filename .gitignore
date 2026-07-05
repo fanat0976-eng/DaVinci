@@ -6,6 +6,18 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-.env
 .venv/
 venv/
+.env
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
