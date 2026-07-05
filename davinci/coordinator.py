@@ -10,11 +10,12 @@ from .agents.tester import TesterAgent
 from .agents.reviewer import ReviewerAgent
 from .memory.decisions import DecisionsMemory
 from .memory.context import ContextManager
+from .rag.retriever import Retriever
 from .config import Config
 
 
 class Coordinator:
-    """Routes tasks to the appropriate agent with independent review."""
+    """Routes tasks to the appropriate agent with RAG and independent review."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -27,6 +28,9 @@ class Coordinator:
         # Shared memory
         self.decisions = DecisionsMemory(config.davinci_dir)
         self.context = ContextManager(config.project_dir, self.decisions)
+
+        # RAG
+        self.retriever = Retriever(config.project_dir, config.llm.base_url)
 
         # Agents
         self.architect = ArchitectAgent(self.llm, config.project_dir)
@@ -48,17 +52,29 @@ class Coordinator:
         # Default: coder
         return "coder"
 
+    def index(self) -> int:
+        """Index the project for RAG. Returns number of chunks."""
+        return self.retriever.index_project()
+
     def run(self, task: str, force_agent: str | None = None) -> dict[str, Any]:
         """Execute a task with full agent pipeline.
 
         Pipeline:
-        1. Architect designs (if complex task)
-        2. Coder implements
-        3. Tester verifies
-        4. Reviewer checks (if issues found)
+        1. Gather context (RAG + decisions)
+        2. Architect designs (if complex task)
+        3. Coder implements
+        4. Tester verifies
+        5. Reviewer checks (if issues found)
         """
         agent_name = force_agent or self.route(task)
-        context = self.context.gather(task)
+
+        # Gather context from multiple sources
+        base_context = self.context.gather(task)
+
+        # Add RAG context if indexed
+        if self.retriever.is_indexed():
+            rag_context = self.retriever.get_context(task, top_k=3)
+            base_context += f"\n\n{rag_context}"
 
         # Record decision
         self.decisions.add(
@@ -72,15 +88,15 @@ class Coordinator:
         # Step 1: Architect (for complex tasks)
         if agent_name == "architect" or self._is_complex(task):
             arch_result = self.architect.run(
-                f"Design a solution for: {task}\n\nExisting context:\n{context}"
+                f"Design a solution for: {task}\n\nExisting context:\n{base_context}"
             )
             results["pipeline"].append({"agent": "architect", "result": arch_result})
-            context += f"\n\n## Architecture Plan\n{arch_result['response']}"
+            base_context += f"\n\n## Architecture Plan\n{arch_result['response']}"
 
         # Step 2: Coder implements
         if agent_name in ("coder", "architect"):
             coder_result = self.coder.run(
-                f"Implement: {task}\n\nPlan:\n{context}"
+                f"Implement: {task}\n\nPlan:\n{base_context}"
             )
             results["pipeline"].append({"agent": "coder", "result": coder_result})
         elif agent_name in ("tester", "reviewer"):
@@ -109,10 +125,10 @@ class Coordinator:
 
         # Step 4: If task was tester/reviewer directly
         elif agent_name == "tester":
-            tester_result = self.tester.run(f"{task}\n\n{context}")
+            tester_result = self.tester.run(f"{task}\n\n{base_context}")
             results["pipeline"].append({"agent": "tester", "result": tester_result})
         elif agent_name == "reviewer":
-            reviewer_result = self.reviewer.run(f"{task}\n\n{context}")
+            reviewer_result = self.reviewer.run(f"{task}\n\n{base_context}")
             results["pipeline"].append({"agent": "reviewer", "result": reviewer_result})
 
         # Combine all responses
@@ -134,7 +150,13 @@ class Coordinator:
         """Stream the response token by token."""
         agent_name = self.route(task)
         agent = getattr(self, agent_name)
+
+        # Gather context
         context = self.context.gather(task)
+        if self.retriever.is_indexed():
+            rag_context = self.retriever.get_context(task, top_k=3)
+            context += f"\n\n{rag_context}"
+
         messages = agent.build_messages(task, context)
         for token in self.llm.chat_stream(messages):
             yield token
