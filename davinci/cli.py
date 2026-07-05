@@ -334,12 +334,17 @@ Examples:
     parser.add_argument("--no-stream", action="store_true", help="Disable streaming")
     parser.add_argument("--agent", type=str, choices=["coder", "architect", "tester", "reviewer"],
                         help="Force specific agent")
+    parser.add_argument("--dashboard", action="store_true", help="Start web dashboard")
+    parser.add_argument("--port", type=int, default=8080, help="Dashboard port")
     parser.add_argument("--dir", type=str, default=".", help="Project directory")
 
     args = parser.parse_args()
     project_dir = Path(args.dir).resolve()
 
-    if args.init:
+    if args.dashboard:
+        from .dashboard import cmd_dashboard
+        cmd_dashboard(project_dir, args.port)
+    elif args.init:
         cmd_init(project_dir)
     elif args.index:
         cmd_index(project_dir)
