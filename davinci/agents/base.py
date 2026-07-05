@@ -62,6 +62,14 @@ class BaseAgent(ABC):
             "results": results,
         }
 
+    @staticmethod
+    def _clean_content(content: str) -> str:
+        """Remove markdown code blocks from content."""
+        # Remove ```python ... ``` or ``` ... ```
+        content = re.sub(r'^```\w*\n', '', content.strip())
+        content = re.sub(r'\n```$', '', content)
+        return content.strip()
+
     def parse_actions(self, response: str) -> list[dict]:
         """Parse tool calls from LLM response.
 
@@ -72,14 +80,16 @@ class BaseAgent(ABC):
         """
         actions = []
 
-        # File write: [FILE: path]\ncontent
+        # File write: [FILE: path]\ncontent (possibly with ``` markers)
         file_pattern = re.compile(
             r'\[FILE:\s*(.+?)\]\s*\n(.*?)(?=\[FILE:|\[EDIT:|\[BASH\]|$)',
             re.DOTALL
         )
         for match in file_pattern.finditer(response):
-            path, content = match.group(1).strip(), match.group(2).strip()
-            actions.append({"type": "write", "path": path, "content": content})
+            path = match.group(1).strip()
+            content = self._clean_content(match.group(2))
+            if content:
+                actions.append({"type": "write", "path": path, "content": content})
 
         # Edit: [EDIT: path]\nold -> new
         edit_pattern = re.compile(
@@ -88,15 +98,19 @@ class BaseAgent(ABC):
         )
         for match in edit_pattern.finditer(response):
             path = match.group(1).strip()
-            old = match.group(2).strip()
-            new = match.group(3).strip()
-            actions.append({"type": "edit", "path": path, "old": old, "new": new})
+            old = self._clean_content(match.group(2))
+            new = self._clean_content(match.group(3))
+            if old and new:
+                actions.append({"type": "edit", "path": path, "old": old, "new": new})
 
         # Bash: [BASH] command
         bash_pattern = re.compile(r'\[BASH\]\s*(.+?)(?=\[FILE:|\[EDIT:|\[BASH\]|$)', re.DOTALL)
         for match in bash_pattern.finditer(response):
             cmd = match.group(1).strip()
-            actions.append({"type": "bash", "command": cmd})
+            # Remove markdown code blocks from bash commands too
+            cmd = self._clean_content(cmd)
+            if cmd:
+                actions.append({"type": "bash", "command": cmd})
 
         return actions
 
