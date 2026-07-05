@@ -39,17 +39,50 @@ class Coordinator:
         self.reviewer = ReviewerAgent(self.llm, config.project_dir)
 
     def route(self, task: str) -> str:
-        """Determine which agent should handle the task."""
-        task_lower = task.lower()
+        """Route task using LLM classification.
 
-        # Routing rules
+        Asks the model to classify the task into one of:
+        - coder: write/modify code
+        - architect: design/architecture planning
+        - tester: write tests, verify
+        - reviewer: review code, find bugs
+        """
+        classification_prompt = f"""Classify this task into EXACTLY ONE category. Reply with ONLY the category name, nothing else.
+
+Task: {task}
+
+Categories:
+- coder: Writing, modifying, or implementing code. Adding features, fixing bugs in code, creating new files.
+- architect: Designing system architecture, planning implementation, creating technical specs, refactoring large systems.
+- tester: Writing tests, verifying code works, running test suites, checking test coverage.
+- reviewer: Code review, finding bugs/security issues, suggesting improvements, auditing code quality.
+
+Category:"""
+
+        try:
+            response = self.llm.chat(
+                [{"role": "user", "content": classification_prompt}],
+                temperature=0.1,
+                max_tokens=20,
+            )
+            agent = response.strip().lower().split()[0]  # Take first word
+            if agent in ("coder", "architect", "tester", "reviewer"):
+                return agent
+        except Exception:
+            pass
+
+        # Fallback to keyword routing
+        return self._keyword_route(task)
+
+    def _keyword_route(self, task: str) -> str:
+        """Fallback keyword-based routing."""
+        task_lower = task.lower()
         if any(w in task_lower for w in ["архитектура", "спроектируй", "план", "design", "architect"]):
             return "architect"
         if any(w in task_lower for w in ["тест", "проверь", "test", "verify"]):
             return "tester"
         if any(w in task_lower for w in ["ревью", "баг", "ошибк", "review", "bug", "fix"]):
             return "reviewer"
-        # Default: coder
         return "coder"
 
     def index(self) -> int:
@@ -162,11 +195,32 @@ class Coordinator:
             yield token
 
     def _is_complex(self, task: str) -> bool:
-        """Determine if a task needs architectural planning."""
-        complex_signals = [
-            "создай", "проект", "систему", "архитектур",
-            "create", "project", "system", "implement",
-            "добавь модуль", "add module", "рефактор",
-        ]
-        task_lower = task.lower()
-        return any(s in task_lower for s in complex_signals)
+        """Determine if a task needs architectural planning via LLM."""
+        prompt = f"""Is this task complex enough to need architecture planning first?
+Answer ONLY "yes" or "no".
+
+A task is complex if it:
+- Involves multiple files or modules
+- Requires designing a new system or major feature
+- Needs careful planning before implementation
+- Involves refactoring existing architecture
+
+Simple tasks (answer "no"):
+- Adding a single function
+- Small bug fixes
+- Writing tests for existing code
+- Minor edits to one file
+
+Task: {task}
+
+Answer:"""
+
+        try:
+            response = self.llm.chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=5,
+            )
+            return response.strip().lower().startswith("yes")
+        except Exception:
+            return False
